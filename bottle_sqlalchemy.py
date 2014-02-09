@@ -58,7 +58,7 @@ License: MIT (see LICENSE for details)
 import inspect
 
 import bottle
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, DBAPIError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm.scoping import ScopedSession
 
@@ -139,7 +139,7 @@ class SQLAlchemyPlugin(object):
                 rv = callback(*args, **kwargs)
                 if commit:
                     session.commit()
-            except (SQLAlchemyError, bottle.HTTPError):
+            except (SQLAlchemyError, bottle.HTTPError, DBAPIError):
                 session.rollback()
                 raise
             except bottle.HTTPResponse:
