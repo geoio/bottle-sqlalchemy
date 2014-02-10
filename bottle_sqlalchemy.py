@@ -74,7 +74,8 @@ class SQLAlchemyPlugin(object):
     api = 2
 
     def __init__(self, engine, metadata=None,
-                 keyword='db', commit=True, create=False, use_kwargs=False, create_session=None):
+                 keyword='db', commit=True, create=False, use_kwargs=False, create_session=None,
+                 on_disconnect="retry"):
         '''
         :param engine: SQLAlchemy engine created with `create_engine` function
         :param metadata: SQLAlchemy metadata. It is required only if `create=True`
@@ -86,6 +87,9 @@ class SQLAlchemyPlugin(object):
                explicitly defined, using **kwargs argument if defined.
         :param create_session: SQLAlchemy session maker created with the 
                 'sessionmaker' function. Will create its own if undefined.
+        :param on_disconnect: When using SQLAlchemy connection pooling this
+                specifies the action on a disconnect event. Valid values are
+                'retry' or 'error' at the moment
         '''
         self.engine = engine
         if create_session is None:
@@ -95,6 +99,7 @@ class SQLAlchemyPlugin(object):
         self.keyword = keyword
         self.create = create
         self.commit = commit
+        self.on_disconnect = on_disconnect
         self.use_kwargs = use_kwargs
 
     def setup(self, app):
@@ -134,23 +139,34 @@ class SQLAlchemyPlugin(object):
             self.metadata.create_all(self.engine)
 
         def wrapper(*args, **kwargs):
-            kwargs[keyword] = session = self.create_session(bind=self.engine)
-            try:
-                rv = callback(*args, **kwargs)
-                if commit:
-                    session.commit()
-            except (SQLAlchemyError, bottle.HTTPError, DBAPIError):
-                session.rollback()
-                raise
-            except bottle.HTTPResponse:
-                if commit:
-                    session.commit()
-                raise
-            finally:
-                if isinstance(self.create_session, ScopedSession):
-                    self.create_session.remove()
-                else:
-                    session.close()
+            while True:
+                kwargs[keyword] = session = self.create_session(bind=self.engine)
+                try:
+                    rv = callback(*args, **kwargs)
+                    if commit:
+                        session.commit()
+                except (SQLAlchemyError, bottle.HTTPError, DBAPIError):
+                    session.rollback()
+                    raise
+                except DBAPIError, e:
+                    session.rollback()
+                    if e.connection_invalidated:
+                        if self.on_disconnect == "retry":
+                            continue
+                        else:
+                            raise
+                    else:
+                        raise
+                except bottle.HTTPResponse:
+                    if commit:
+                        session.commit()
+                    raise
+                finally:
+                    if isinstance(self.create_session, ScopedSession):
+                        self.create_session.remove()
+                    else:
+                        session.close()
+                break
             return rv
 
         return wrapper
